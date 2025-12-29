@@ -14,7 +14,9 @@ class FunctionNode:
     lineno: int
     end_lineno: int
     code: str
-    summary: Optional[str] = None
+    code_summary: Optional[str] = None  # Summary of what the code does
+    dependency_summary: Optional[str] = None  # Summary of inward and outward dependencies
+    summary: Optional[str] = None  # Deprecated: kept for backward compatibility
     inward_dependencies: List[str] = field(default_factory=list)  # What this function uses
     outward_dependencies: List[str] = field(default_factory=list)  # What uses this function
     class_name: Optional[str] = None  # If this is a method, which class it belongs to
@@ -25,7 +27,9 @@ class FunctionNode:
             "lineno": self.lineno,
             "end_lineno": self.end_lineno,
             "code": self.code,
-            "summary": self.summary,
+            "code_summary": self.code_summary,
+            "dependency_summary": self.dependency_summary,
+            "summary": self.summary,  # Deprecated
             "inward_dependencies": self.inward_dependencies,
             "outward_dependencies": self.outward_dependencies,
             "class_name": self.class_name,
@@ -41,7 +45,9 @@ class ClassNode:
     end_lineno: int
     code: str
     methods: List[FunctionNode]
-    summary: Optional[str] = None
+    code_summary: Optional[str] = None  # Summary of what the code does
+    dependency_summary: Optional[str] = None  # Summary of inward dependencies
+    summary: Optional[str] = None  # Deprecated: kept for backward compatibility
     inward_dependencies: List[str] = field(default_factory=list)  # What this class uses
 
     def to_dict(self) -> Dict[str, Any]:
@@ -50,7 +56,9 @@ class ClassNode:
             "lineno": self.lineno,
             "end_lineno": self.end_lineno,
             "code": self.code,
-            "summary": self.summary,
+            "code_summary": self.code_summary,
+            "dependency_summary": self.dependency_summary,
+            "summary": self.summary,  # Deprecated
             "inward_dependencies": self.inward_dependencies,
             "methods": [m.to_dict() for m in self.methods],
         }
@@ -63,13 +71,17 @@ class FileNode:
     path: str
     classes: List[ClassNode]
     functions: List[FunctionNode]  # top-level functions
-    summary: Optional[str] = None
+    code_summary: Optional[str] = None  # Summary of what the code does
+    dependency_summary: Optional[str] = None  # Summary of imports and dependencies
+    summary: Optional[str] = None  # Deprecated: kept for backward compatibility
     imports: List[str] = field(default_factory=list)  # Module-level imports
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "path": self.path,
-            "summary": self.summary,
+            "code_summary": self.code_summary,
+            "dependency_summary": self.dependency_summary,
+            "summary": self.summary,  # Deprecated
             "imports": self.imports,
             "classes": [c.to_dict() for c in self.classes],
             "functions": [f.to_dict() for f in self.functions],
@@ -159,9 +171,9 @@ def _extract_imports(tree: ast.AST) -> List[str]:
     return sorted(imports)
 
 
-def _summarize_with_llm(code: str, context: str, openai_client: Optional[OpenAI] = None) -> Optional[str]:
+def _summarize_code_with_llm(code: str, context: str, openai_client: Optional[OpenAI] = None) -> Optional[str]:
     """
-    Use LLM to summarize a code chunk.
+    Use LLM to summarize what a code chunk does.
     
     Args:
         code: The code to summarize
@@ -201,7 +213,65 @@ Summary:"""
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"LLM summarization failed: {e}")
+        print(f"LLM code summarization failed: {e}")
+        return None
+
+
+def _summarize_dependencies_with_llm(
+    inward_deps: List[str], 
+    outward_deps: List[str], 
+    context: str,
+    openai_client: Optional[OpenAI] = None
+) -> Optional[str]:
+    """
+    Use LLM to summarize the dependencies of a code chunk.
+    
+    Args:
+        inward_deps: List of dependencies this code uses (imports, function calls, etc.)
+        outward_deps: List of functions/classes that use this code
+        context: Context like "function", "class", or "file"
+        openai_client: Optional OpenAI client. If None, tries to get from env.
+    
+    Returns:
+        Summary string or None if LLM unavailable
+    """
+    if not openai_client:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            return None
+        openai_client = OpenAI(api_key=api_key)
+
+    inward_str = ", ".join(inward_deps[:20])  # Limit to first 20 for prompt size
+    if len(inward_deps) > 20:
+        inward_str += f" (and {len(inward_deps) - 20} more)"
+    
+    outward_str = ", ".join(outward_deps[:20]) if outward_deps else "none"
+    if outward_deps and len(outward_deps) > 20:
+        outward_str += f" (and {len(outward_deps) - 20} more)"
+
+    prompt = f"""Analyze the dependencies of this Python {context} and provide a concise summary (2-3 sentences) describing:
+1. What external dependencies it relies on (inward dependencies)
+2. What other code depends on it (outward dependencies)
+3. The nature of these dependencies (e.g., data processing, API calls, utility functions)
+
+Inward dependencies (what this {context} uses): {inward_str if inward_deps else "none"}
+Outward dependencies (what uses this {context}): {outward_str}
+
+Summary:"""
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a code analysis assistant. Provide concise, technical summaries about code dependencies."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=200,
+            temperature=0.3,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"LLM dependency summarization failed: {e}")
         return None
 
 
@@ -333,9 +403,12 @@ def build_file_ast(
                     func_deps = func_visitor.get_dependencies()
                     
                     func_code = _get_source_segment(source, item)
-                    summary = None
+                    code_summary = None
+                    dependency_summary = None
                     if summarize:
-                        summary = _summarize_with_llm(func_code, f"method {item.name} in class {node.name}", openai_client)
+                        code_summary = _summarize_code_with_llm(func_code, f"method {item.name} in class {node.name}", openai_client)
+                        # Dependency summary will be generated later in build_codebase_ast after outward deps are populated
+                        dependency_summary = None
                     
                     methods.append(
                         FunctionNode(
@@ -343,16 +416,22 @@ def build_file_ast(
                             lineno=item.lineno,
                             end_lineno=getattr(item, "end_lineno", item.lineno),
                             code=func_code,
-                            summary=summary,
+                            code_summary=code_summary,
+                            dependency_summary=dependency_summary,
+                            summary=code_summary,  # For backward compatibility
                             inward_dependencies=func_deps,
                             class_name=node.name,
                         )
                     )
 
             class_code = _get_source_segment(source, node)
-            class_summary = None
+            code_summary = None
+            dependency_summary = None
             if summarize:
-                class_summary = _summarize_with_llm(class_code, f"class {node.name}", openai_client)
+                code_summary = _summarize_code_with_llm(class_code, f"class {node.name}", openai_client)
+                dependency_summary = _summarize_dependencies_with_llm(
+                    class_deps, [], f"class {node.name}", openai_client
+                    )
 
             classes.append(
                 ClassNode(
@@ -360,7 +439,9 @@ def build_file_ast(
                     lineno=node.lineno,
                     end_lineno=getattr(node, "end_lineno", node.lineno),
                     code=class_code,
-                    summary=class_summary,
+                    code_summary=code_summary,
+                    dependency_summary=dependency_summary,
+                    summary=code_summary,  # For backward compatibility
                     inward_dependencies=class_deps,
                     methods=methods,
                 )
@@ -373,9 +454,12 @@ def build_file_ast(
             func_deps = func_visitor.get_dependencies()
             
             func_code = _get_source_segment(source, node)
-            summary = None
+            code_summary = None
+            dependency_summary = None
             if summarize:
-                summary = _summarize_with_llm(func_code, f"function {node.name}", openai_client)
+                code_summary = _summarize_code_with_llm(func_code, f"function {node.name}", openai_client)
+                # Dependency summary will be generated later in build_codebase_ast after outward deps are populated
+                dependency_summary = None
             
             top_level_functions.append(
                 FunctionNode(
@@ -383,19 +467,28 @@ def build_file_ast(
                     lineno=node.lineno,
                     end_lineno=getattr(node, "end_lineno", node.lineno),
                     code=func_code,
-                    summary=summary,
+                    code_summary=code_summary,
+                    dependency_summary=dependency_summary,
+                    summary=code_summary,  # For backward compatibility
                     inward_dependencies=func_deps,
                 )
             )
 
     file_code = source
-    file_summary = None
+    code_summary = None
+    dependency_summary = None
     if summarize:
-        file_summary = _summarize_with_llm(file_code, "file", openai_client)
+        code_summary = _summarize_code_with_llm(file_code, "file", openai_client)
+        # Summarize file-level dependencies (imports)
+        dependency_summary = _summarize_dependencies_with_llm(
+            imports, [], "file", openai_client
+            )
 
     return FileNode(
         path=str(path),
-        summary=file_summary,
+        code_summary=code_summary,
+        dependency_summary=dependency_summary,
+        summary=code_summary,  # For backward compatibility
         imports=imports,
         classes=classes,
         functions=top_level_functions,
@@ -439,7 +532,7 @@ def build_codebase_ast(
     # Build call graph and populate outward dependencies
     call_graph = _build_call_graph(file_nodes)
     
-    # Map function identifiers back to FunctionNode objects
+    # Map function identifiers back to FunctionNode objects and update dependency summaries
     for file_node in file_nodes:
         file_id = file_node.path
         
@@ -448,6 +541,12 @@ def build_codebase_ast(
             func_id = f"{file_id}:{func.name}"
             if func_id in call_graph:
                 func.outward_dependencies = call_graph[func_id]
+            
+            # Update dependency summary if summarize is enabled (regenerate with outward deps now available)
+            if summarize and (func.inward_dependencies or func.outward_dependencies):
+                func.dependency_summary = _summarize_dependencies_with_llm(
+                    func.inward_dependencies, func.outward_dependencies, f"function {func.name}", openai_client
+                )
         
         # Process methods
         for cls in file_node.classes:
@@ -455,6 +554,13 @@ def build_codebase_ast(
                 func_id = f"{file_id}:{cls.name}.{method.name}"
                 if func_id in call_graph:
                     method.outward_dependencies = call_graph[func_id]
+                
+                # Update dependency summary if summarize is enabled (regenerate with outward deps now available)
+                if summarize and (method.inward_dependencies or method.outward_dependencies):
+                    method.dependency_summary = _summarize_dependencies_with_llm(
+                        method.inward_dependencies, method.outward_dependencies, 
+                        f"method {method.name} in class {cls.name}", openai_client
+                    )
 
     return file_nodes
 

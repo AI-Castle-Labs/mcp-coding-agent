@@ -1,0 +1,11 @@
+# GitHub Codebase Analyzer - Dependencies
+
+# HTTP requests to GitHub API
+requests>=2.28.0
+
+# Load environment variables from .env file
+python-dotenv>=1.0.0
+
+# OpenAI API client for LLM summarization (optional)
+openai>=1.0.0
+

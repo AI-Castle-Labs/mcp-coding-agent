@@ -32,9 +32,11 @@ def test_second_builder_with_github():
     ast_builder = AstBuilder()
     
     # Test with a specific repo and file
-    # Using the first repo from the list
-    test_repo = github_analyzer.reponame[0] if github_analyzer.reponame else "agentic-ai-music-recommendation-system"
-    print(f"\n📦 Repository: {github_analyzer.owner}/{test_repo}")
+    # Using VentureBot repository for testing
+    test_repo = github_analyzer.reponame[0] if github_analyzer.reponame else "VentureBot"
+    test_owner = "ashcastelinocs124"  # VentureBot repository owner
+    github_analyzer.owner = test_owner  # Set owner for VentureBot
+    print(f"\n📦 Repository: {test_owner}/{test_repo}")
     
     # Get list of Python files in the repo
     print("\n🔍 Fetching Python files from repository...")
@@ -136,15 +138,17 @@ def test_specific_file():
     github_analyzer = githubanalyzer()
     ast_builder = AstBuilder()
     
-    # Try to get a specific file - adjust this path based on your repo structure
-    test_repo = github_analyzer.reponame[0] if github_analyzer.reponame else "agentic-ai-music-recommendation-system"
+    # Try to get a specific file - using VentureBot repository
+    test_repo = github_analyzer.reponame[0] if github_analyzer.reponame else "VentureBot"
+    test_owner = "ashcastelinocs124"  # VentureBot repository owner
+    github_analyzer.owner = test_owner  # Set owner for VentureBot
     
-    # Common Python file paths to try
+    # Common Python file paths to try (VentureBot structure)
     test_paths = [
         "main.py",
-        "app.py",
-        "src/main.py",
-        "app/main.py",
+        "services/api_gateway/app/main.py",
+        "services/orchestrator/chat_orchestrator.py",
+        "crewai-agents/src/venturebot_crew/main.py",
     ]
     
     for test_path in test_paths:
